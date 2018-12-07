@@ -43,13 +43,14 @@ interface IAppState {
   playing: boolean;
   playbackRate: number;
   classifications: { [classification: string]: boolean };
-  predictionsByTime: { [seconds: number]: ILabel[] | undefined };
+  predictionsByTime: { [seconds: number]: IPrediction[] | undefined };
   currentPlaybackTime: number;
   peakInstance?: Peaks.PeaksInstance;
   sourceUrl?: string;
   waveformReady: boolean;
   peaksError?: string;
-  models: string[];
+  models: { [model: string]: boolean };
+  predictions: IPrediction[];
 }
 
 class App extends React.Component<IMedia, IAppState> {
@@ -60,28 +61,10 @@ class App extends React.Component<IMedia, IAppState> {
     playbackRate: 1.0,
     sourceUrl: this.props.sourceUrl,
     waveformReady: false,
-    models: [...new Set(this.props.predictions.map(p => p.model || ""))].filter(
-      e => e
-    ),
-    classifications: [
-      ...this.props.predictions,
-      ...(this.props.labels || [])
-    ].reduce(
-      (categories, { classifier }) => ({ ...categories, [classifier]: true }),
-      {}
-    ),
-    predictionsByTime: [
-      ...this.props.predictions,
-      ...(this.props.labels || [])
-    ].reduce<{
-      [t: number]: ILabel[];
-    }>((predictionsByTime, p) => {
-      const timeS = Math.round(p.time / 1000);
-      return {
-        ...predictionsByTime,
-        [timeS]: [...(predictionsByTime[timeS] || []), p]
-      };
-    }, {})
+    predictions: [],
+    models: {},
+    classifications: {},
+    predictionsByTime: {}
   };
 
   private playerRef = React.createRef<ReactPlayer>();
@@ -91,6 +74,39 @@ class App extends React.Component<IMedia, IAppState> {
 
   constructor(props: any) {
     super(props);
+  }
+
+  public componentDidMount() {
+    const predictions = [
+      ...this.props.predictions,
+      ...(this.props.labels || []).map(p => {
+        return { ...p, model: "Ground-Truth", confidence: 1.0 };
+      })
+    ].sort((a, b) => a.time - b.time);
+    const models = [...new Set(predictions.map(p => p.model || ""))]
+      .filter(e => e)
+      .reduce((carry, model) => ({ ...carry, [model]: true }), {});
+    const classifications = predictions.reduce(
+      (categories, { classifier }) => ({ ...categories, [classifier]: true }),
+      {}
+    );
+    const predictionsByTime = predictions.reduce<{
+      [t: number]: IPrediction[];
+    }>((carry, p) => {
+      const timeS = Math.round(p.time / 1000);
+
+      const seconds =
+        "duration" in p
+          ? Math.ceil((p as IAudioPrediction).duration / 1000)
+          : 1;
+      for (let i = 0; i < seconds; i++) {
+        const time = timeS + i;
+        carry[time] = carry[time] || [];
+        carry[time].push(p);
+      }
+      return carry;
+    }, {});
+    this.setState({ predictions, models, classifications, predictionsByTime });
   }
 
   public componentDidUpdate() {
@@ -103,7 +119,7 @@ class App extends React.Component<IMedia, IAppState> {
     const peaksContainer = this.peaksContainerRef.current;
     const peaksMedia = this.peaksAudioRef.current;
     if (!this.state.peakInstance && peaksContainer && peaksMedia) {
-      const { predictions } = this.props;
+      const { predictions } = this.state;
       const audioPredictions = predictions.filter(
         p => "time" in p && "duration" in p
       ) as IAudioPrediction[];
@@ -116,7 +132,7 @@ class App extends React.Component<IMedia, IAppState> {
         return {
           startTime: p.time / 1000,
           endTime: p.time + p.duration / 1000,
-          color: stringToRGBA(p.classifier),
+          color: this.predictionColor(p),
           labelText: p.classifier
         };
       });
@@ -186,9 +202,10 @@ class App extends React.Component<IMedia, IAppState> {
       waveformReady,
       peaksError,
       models,
-      classifications
+      classifications,
+      predictions
     } = this.state;
-    const { title, predictions, subtitles, labels } = this.props;
+    const { title, subtitles } = this.props;
 
     const reactPlayer = this.playerRef.current;
     const duration = (reactPlayer && reactPlayer.getDuration()) || -1;
@@ -203,19 +220,20 @@ class App extends React.Component<IMedia, IAppState> {
     const scaleX = offsetWidth / videoWidth;
     const scaleY = offsetHeight / videoHeight;
 
-    const currentPredictions =
-      predictionsByTime[Math.round(currentPlaybackTime)] || [];
+    const currentPredictions = (
+      predictionsByTime[Math.round(currentPlaybackTime)] || []
+    ).filter(p =>
+      classifications[p.classifier] && "model" in p
+        ? !!models[(p as IPrediction).model || ""]
+        : true
+    );
     const currentVideoPredictions = (currentPredictions.filter(
       ({ x, y, width, height, time }: any) => x && y && width && height && time
     ) as IVideoPrediction[]).filter(p => classifications[p.classifier]);
-    const currentAudioPredictions = (predictions.filter(
-      ({ time, duration: pDuration }: any) =>
-        pDuration &&
-        time &&
-        currentPlaybackTime >= time / 1000 &&
-        currentPlaybackTime <= (time + duration) / 1000
+    const currentAudioPredictions = (currentPredictions.filter(
+      ({ time, duration: pDuration }: any) => pDuration && time
     ) as IAudioPrediction[]).filter(p => classifications[p.classifier]);
-    const hasModelMetadata = models.length > 0;
+    const hasModelMetadata = Object.keys(models).length > 0;
 
     return (
       <div
@@ -323,13 +341,10 @@ class App extends React.Component<IMedia, IAppState> {
                       pointerEvents: "none"
                     }}
                   >
-                    <Layer>
+                    <Layer hitGraphEnabled={false}>
                       {currentVideoPredictions.map(p => {
                         const hasValidBoundingBox = p.width > 0 && p.height > 0;
-                        const fill = stringToRGBA(p.classifier, {
-                          // alpha: p.confidence
-                          alpha: 0.5
-                        });
+                        const fill = this.predictionColor(p);
                         return [
                           hasValidBoundingBox && (
                             <Rect
@@ -339,8 +354,8 @@ class App extends React.Component<IMedia, IAppState> {
                               width={p.width}
                               height={p.height}
                               name={p.classifier}
-                              fill={fill}
-                              stroke="black"
+                              // fill={fill}
+                              stroke={fill}
                             />
                           ),
                           <Path
@@ -358,10 +373,7 @@ class App extends React.Component<IMedia, IAppState> {
                       {currentAudioPredictions.map(p => {
                         return (
                           <Path
-                            fill={stringToRGBA(p.classifier, {
-                              // alpha: p.confidence
-                              alpha: 0.5
-                            })}
+                            fill={this.predictionColor(p)}
                             key={JSON.stringify(p)}
                             width={videoHeight / 10}
                             height={videoHeight / 10}
@@ -431,7 +443,6 @@ class App extends React.Component<IMedia, IAppState> {
               flex: "1"
             }}
           >
-            <h2>Filter</h2>
             <div
               style={{
                 display: "flex",
@@ -440,33 +451,66 @@ class App extends React.Component<IMedia, IAppState> {
                 justifyContent: "space-around"
               }}
             >
-              {Object.keys(classifications).map(c => {
-                return (
-                  <div key={JSON.stringify(c)}>
-                    <input
-                      type="checkbox"
-                      checked={classifications[c]}
-                      onChange={e => {
-                        this.setState({
-                          classifications: {
-                            ...classifications,
-                            [c]: e.currentTarget.checked
-                          }
-                        });
-                      }}
-                    />
-                    <span
-                      style={{
-                        color: stringToRGBA(c, {
-                          alpha: 1
-                        })
-                      }}
-                    >
-                      {c}
-                    </span>
-                  </div>
-                );
-              })}
+              <div className="classifications">
+                <h4>Classifiers</h4>
+                {Object.keys(classifications).map(c => {
+                  return (
+                    <div key={JSON.stringify(c)}>
+                      <input
+                        type="checkbox"
+                        checked={classifications[c]}
+                        onChange={e => {
+                          this.setState({
+                            classifications: {
+                              ...classifications,
+                              [c]: e.currentTarget.checked
+                            }
+                          });
+                        }}
+                      />
+                      <span
+                        style={{
+                          color: stringToRGBA(c, {
+                            alpha: 1
+                          })
+                        }}
+                      >
+                        {c}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="models">
+                <h4>Models</h4>
+                {Object.keys(models).map(m => {
+                  return (
+                    <div key={JSON.stringify(m)}>
+                      <input
+                        type="checkbox"
+                        checked={models[m]}
+                        onChange={e => {
+                          this.setState({
+                            models: {
+                              ...models,
+                              [m]: e.currentTarget.checked
+                            }
+                          });
+                        }}
+                      />
+                      <span
+                        style={{
+                          color: stringToRGBA(m, {
+                            alpha: 1
+                          })
+                        }}
+                      >
+                        {m}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
             <table style={{ border: "1px dotted grey", width: "100%" }}>
               <thead>
@@ -480,13 +524,12 @@ class App extends React.Component<IMedia, IAppState> {
                 </tr>
               </thead>
               <tbody>
-                {[...predictions, ...(labels || [])]
-                  .sort((a, b) => a.time - b.time)
-                  .map(p => {
-                    console.log(p.classifier);
-                    return p;
-                  })
-                  .filter(p => classifications[p.classifier])
+                {predictions
+                  .filter(p =>
+                    classifications[p.classifier] && "model" in p
+                      ? models[p.model || ""]
+                      : true
+                  )
                   .map(prediction => {
                     const isAudio = "duration" in prediction;
                     const isPlaying =
@@ -531,7 +574,8 @@ class App extends React.Component<IMedia, IAppState> {
                     return (
                       <tr
                         style={{
-                          background: isPlaying ? "lightgrey" : "unset"
+                          background: isPlaying ? "lightgrey" : "unset",
+                          color: this.predictionColor(prediction)
                         }}
                         key={JSON.stringify(prediction)}
                         ref={ref}
@@ -541,9 +585,7 @@ class App extends React.Component<IMedia, IAppState> {
                         </td>
                         <td
                           style={{
-                            color: stringToRGBA(prediction.classifier, {
-                              alpha: 1
-                            })
+                            color: this.predictionColor(prediction)
                           }}
                         >
                           <code>{prediction.classifier}</code>
@@ -559,7 +601,11 @@ class App extends React.Component<IMedia, IAppState> {
                         </td>
                         <td>
                           <code>
-                            {"duration" in prediction ? "Audio" : "Video"}
+                            {"duration" in prediction
+                              ? "Audio"
+                              : (prediction as IVideoPrediction).width > 0
+                              ? "Video"
+                              : "Video (No Box)"}
                           </code>
                         </td>
                         <td>
@@ -575,6 +621,9 @@ class App extends React.Component<IMedia, IAppState> {
       </div>
     );
   }
+
+  private predictionColor = (p: IPrediction): string =>
+    stringToRGBA(p.classifier + p.model, { alpha: 1 });
 }
 
 export default App;
