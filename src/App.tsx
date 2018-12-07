@@ -39,6 +39,7 @@ interface IAppState {
   currentPlaybackTime: number;
   peakInstance?: Peaks.PeaksInstance;
   sourceUrl?: string;
+  currCategory: string[];
 }
 
 class App extends React.Component<IMedia, IAppState> {
@@ -70,6 +71,7 @@ class App extends React.Component<IMedia, IAppState> {
         [timeS]: [...(predictionsByTime[timeS] || []), p]
       };
     }, {}),
+    currCategory: []
   };
 
   private playerRef = React.createRef<ReactPlayer>();
@@ -81,7 +83,9 @@ class App extends React.Component<IMedia, IAppState> {
     super(props);
   }
 
-
+  public componentDidMount() {
+    this.setState({ currCategory: this.state.categories });
+  }
   public componentDidUpdate() {
     // Ensure the first label in always in view
     this.currentlyPlayingRefs.slice(0, 1).forEach(el => {
@@ -139,9 +143,9 @@ class App extends React.Component<IMedia, IAppState> {
     }
   }
   public playPause = () => {
-    console.log("play")
-    this.setState({playing: !this.state.playing})
-  }
+    console.log("play");
+    this.setState({ playing: !this.state.playing });
+  };
 
   public seek = (e: number) => {
     const { current } = this.playerRef;
@@ -245,7 +249,11 @@ class App extends React.Component<IMedia, IAppState> {
                 >
                   <source src={sourceUrl} type="audio/mpeg" />
                 </audio>
-                <div className="player-video" style={{ position: "relative" }} onClick={this.playPause}>
+                <div
+                  className="player-video"
+                  style={{ position: "relative" }}
+                  onClick={this.playPause}
+                >
                   <ReactPlayer
                     width="100%"
                     height="100%"
@@ -347,41 +355,58 @@ class App extends React.Component<IMedia, IAppState> {
               flex: "1"
             }}
           >
-            <h2>Filter</h2>
-            <tbody>
-              {this.state.categories.map((category, i) => {
-                return (
-                  <tr>
-                    <th
-                      className={category}
-                      style={{
-                        color: stringToRGBA(category, {
-                          alpha: 1
-                        })
-                      }}
-                    >
-                      {category}
-                    </th>
-                    <th>
-                      <input
-                        key={i}
-                        type="checkbox"
-                        value={category}
-                        checked={this.state.filters[category]}
-                        onChange={ev => {
-                          this.setState({
-                            filters: {
-                              ...this.state.filters,
-                              [category]: ev.currentTarget.checked
-                            }
-                          });
+            <table
+              style={{
+                display: "flex",
+                justifyContent: "center",
+                flexDirection: "row"
+              }}
+            >
+              <thead>
+                <tr>
+                  <th>Filter: </th>
+                </tr>
+              </thead>
+              <tbody
+                style={{
+                  display: "flex",
+                  justifyContent: "center"
+                }}
+              >
+                {this.state.categories.map((category, i) => {
+                  return (
+                    <tr>
+                      <th
+                        className={category}
+                        style={{
+                          color: stringToRGBA(category, {
+                            alpha: 1
+                          })
                         }}
-                      />
-                    </th>
-                  </tr>
-                );
-              })}
-            </tbody>
+                      >
+                        {category}
+                      </th>
+                      <th>
+                        <input
+                          key={i}
+                          type="checkbox"
+                          value={category}
+                          checked={this.state.filters[category]}
+                          onChange={ev => {
+                            this.setState({
+                              filters: {
+                                ...this.state.filters,
+                                [category]: ev.currentTarget.checked
+                              }
+                            });
+                          }}
+                        />
+                      </th>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
             <tbody>
               {predictions.map(prediction => {
                 return <div />;
