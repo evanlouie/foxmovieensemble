@@ -31,7 +31,10 @@ interface IAudioPrediction extends IPrediction {
 }
 
 interface IAppState {
+  filters: { [classification: string]: boolean };
+  checked: boolean;
   volume: number;
+  playing: boolean;
   playbackRate: number;
   categories: string[];
   predictionsByTime: { [seconds: number]: IPrediction[] | undefined };
@@ -45,8 +48,16 @@ interface IAppState {
 
 class App extends React.Component<IMedia, IAppState> {
   public state: IAppState = {
+    filters: this.props.predictions
+      .map(prediction => prediction.classifier)
+      .reduce<{ [classification: string]: boolean }>((filters, classifier) => {
+        filters[classifier] = true;
+        return filters;
+      }, {}),
+    checked: true,
     currentPlaybackTime: 0,
-    volume: 0.8,
+    playing: false,
+    volume: 0.0,
     playbackRate: 1.0,
     sourceUrl: this.props.sourceUrl,
     waveformReady: false,
@@ -67,7 +78,7 @@ class App extends React.Component<IMedia, IAppState> {
         ...predictionsByTime,
         [timeS]: [...(predictionsByTime[timeS] || []), p]
       };
-    }, {})
+    }, {}),
   };
 
   private playerRef = React.createRef<ReactPlayer>();
@@ -78,6 +89,7 @@ class App extends React.Component<IMedia, IAppState> {
   constructor(props: any) {
     super(props);
   }
+
 
   public componentDidUpdate() {
     // Ensure the first label in always in view
@@ -137,12 +149,19 @@ class App extends React.Component<IMedia, IAppState> {
       });
 
       this.setState({ peakInstance });
+
+      peakInstance.on("player_seek", (e: number) => {
+        const { current } = this.playerRef;
+        if (current) {
+          current.seekTo(e);
+        }
+      });
     }
   }
-
-  public onSeek = (newTime: number) => {
-    console.log("new Time: " + newTime);
-  };
+  public playPause = () => {
+    console.log("play")
+    this.setState({playing: !this.state.playing})
+  }
 
   public seek = (e: number) => {
     const { current } = this.playerRef;
@@ -160,7 +179,6 @@ class App extends React.Component<IMedia, IAppState> {
     this.currentlyPlayingRefs = [];
     const {
       volume,
-      playbackRate,
       predictionsByTime,
       currentPlaybackTime,
       sourceUrl,
@@ -185,16 +203,16 @@ class App extends React.Component<IMedia, IAppState> {
 
     const currentPredictions =
       predictionsByTime[Math.round(currentPlaybackTime)] || [];
-    const currentVideoPredictions = currentPredictions.filter(
+    const currentVideoPredictions = (currentPredictions.filter(
       ({ x, y, width, height, time }: any) => x && y && width && height && time
-    ) as IVideoPrediction[];
-    const currentAudioPredictions = predictions.filter(
+    ) as IVideoPrediction[]).filter(p => this.state.filters[p.classifier]);
+    const currentAudioPredictions = (predictions.filter(
       ({ time, duration: pDuration }: any) =>
         pDuration &&
         time &&
         currentPlaybackTime >= time / 1000 &&
         currentPlaybackTime <= (time + duration) / 1000
-    ) as IAudioPrediction[];
+    ) as IAudioPrediction[]).filter(p => this.state.filters[p.classifier]);
     const hasModelMetadata = models.length > 0;
 
     return (
@@ -207,7 +225,14 @@ class App extends React.Component<IMedia, IAppState> {
           flexDirection: "column"
         }}
       >
-        <section id="header">
+        <section
+          id="header"
+          style={{
+            maxHeight: "100%",
+            border: "1px dotted grey",
+            flex: "1"
+          }}
+        >
           <h1>{title}</h1>
         </section>
 
@@ -234,10 +259,24 @@ class App extends React.Component<IMedia, IAppState> {
                   overflowY: "scroll"
                 }}
               >
-                <div className="player-video" style={{ position: "relative" }}>
+                <audio
+                  controls
+                  onPlay={() => this.setState({ playing: true })}
+                  onPause={() => this.setState({ playing: false })}
+                  ref={this.peaksAudioRef}
+                  onSeeking={() => this.setState({ playing: true })}
+                  style={{ width: "100%" }}
+                >
+                  <source src={sourceUrl} type="audio/mpeg" />
+                </audio>
+                <div className="player-video" style={{ position: "relative" }} onClick={this.playPause}>
                   <ReactPlayer
+                    width="100%"
+                    height="100%"
                     ref={this.playerRef}
                     url={sourceUrl}
+                    playing={this.state.playing}
+                    controls={false}
                     config={{
                       file: {
                         tracks: subtitles
@@ -256,12 +295,11 @@ class App extends React.Component<IMedia, IAppState> {
                     height="100%"
                     controls={true}
                     volume={volume}
-                    playbackRate={playbackRate}
                     onProgress={({ playedSeconds }) => {
                       this.setState({ currentPlaybackTime: playedSeconds });
                     }}
                     progressInterval={250}
-                    onSeek={this.onSeek}
+                    onSeek={this.seek}
                     onPause={() => {
                       const { peakInstance } = this.state;
                       if (peakInstance) {
@@ -384,6 +422,46 @@ class App extends React.Component<IMedia, IAppState> {
               flex: "1"
             }}
           >
+            <h2>Filter</h2>
+            <tbody>
+              {this.state.categories.map((category, i) => {
+                return (
+                  <tr>
+                    <th
+                      className={category}
+                      style={{
+                        color: stringToRGBA(category, {
+                          alpha: 1
+                        })
+                      }}
+                    >
+                      {category}
+                    </th>
+                    <th>
+                      <input
+                        key={i}
+                        type="checkbox"
+                        value={category}
+                        checked={this.state.filters[category]}
+                        onChange={ev => {
+                          this.setState({
+                            filters: {
+                              ...this.state.filters,
+                              [category]: ev.currentTarget.checked
+                            }
+                          });
+                        }}
+                      />
+                    </th>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tbody>
+              {predictions.map(prediction => {
+                return <div />;
+              })}
+            </tbody>
             <table style={{ border: "1px dotted grey", width: "100%" }}>
               <thead>
                 <tr>
@@ -398,6 +476,7 @@ class App extends React.Component<IMedia, IAppState> {
               <tbody>
                 {predictions
                   .sort((a, b) => a.time - b.time)
+                  .filter(p => this.state.filters[p.classifier])
                   .map(prediction => {
                     const isAudio = "duration" in prediction;
                     const isPlaying =
