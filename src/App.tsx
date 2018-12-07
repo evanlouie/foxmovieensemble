@@ -9,34 +9,40 @@ export interface IMedia {
   title: string;
   sourceUrl?: string; // URL to either video, image, or audio file
   predictions: Array<IVideoPrediction | IAudioPrediction>;
+  labels?: Array<IVideoLabel | IAudioLabel>;
   subtitles?: { [language: string]: string };
 }
 
-interface IPrediction {
+interface ILabel {
   classifier: string;
-  confidence: number; // 0 - 100
   time: number; // time in ms relative to 0:00:00.000 in source
-  model?: string;
 }
 
-interface IVideoPrediction extends IPrediction {
+interface IVideoLabel extends ILabel {
   x: number;
   y: number;
   width: number;
   height: number;
 }
 
-interface IAudioPrediction extends IPrediction {
+interface IAudioLabel extends ILabel {
   duration: number; // duration in ms
 }
 
+interface IPrediction extends ILabel {
+  confidence: number; // 0 - 100
+  model?: string;
+}
+
+interface IVideoPrediction extends IPrediction, IVideoLabel {}
+
+interface IAudioPrediction extends IPrediction, IAudioLabel {}
+
 interface IAppState {
-  filters: { [classification: string]: boolean };
-  checked: boolean;
   volume: number;
   playing: boolean;
   playbackRate: number;
-  categories: string[];
+  classifications: { [classification: string]: boolean };
   predictionsByTime: { [seconds: number]: IPrediction[] | undefined };
   currentPlaybackTime: number;
   peakInstance?: Peaks.PeaksInstance;
@@ -48,13 +54,6 @@ interface IAppState {
 
 class App extends React.Component<IMedia, IAppState> {
   public state: IAppState = {
-    filters: this.props.predictions
-      .map(prediction => prediction.classifier)
-      .reduce<{ [classification: string]: boolean }>((filters, classifier) => {
-        filters[classifier] = true;
-        return filters;
-      }, {}),
-    checked: true,
     currentPlaybackTime: 0,
     playing: false,
     volume: 0.0,
@@ -64,11 +63,9 @@ class App extends React.Component<IMedia, IAppState> {
     models: [...new Set(this.props.predictions.map(p => p.model || ""))].filter(
       e => e
     ),
-    categories: Object.keys(
-      this.props.predictions.reduce(
-        (categories, { classifier }) => ({ ...categories, [classifier]: true }),
-        {}
-      )
+    classifications: this.props.predictions.reduce(
+      (categories, { classifier }) => ({ ...categories, [classifier]: true }),
+      {}
     ),
     predictionsByTime: this.props.predictions.reduce<{
       [t: number]: IPrediction[];
@@ -78,7 +75,7 @@ class App extends React.Component<IMedia, IAppState> {
         ...predictionsByTime,
         [timeS]: [...(predictionsByTime[timeS] || []), p]
       };
-    }, {}),
+    }, {})
   };
 
   private playerRef = React.createRef<ReactPlayer>();
@@ -89,7 +86,6 @@ class App extends React.Component<IMedia, IAppState> {
   constructor(props: any) {
     super(props);
   }
-
 
   public componentDidUpdate() {
     // Ensure the first label in always in view
@@ -126,7 +122,7 @@ class App extends React.Component<IMedia, IAppState> {
         };
       });
 
-      const options: Peaks.PeaksOptions = {
+      const peakInstance = Peaks.init({
         container: this.peaksContainerRef.current as HTMLElement,
         mediaElement: this.peaksAudioRef.current as Element,
         audioContext: new AudioContext(),
@@ -134,8 +130,7 @@ class App extends React.Component<IMedia, IAppState> {
         showPlayheadTime: true,
         segments: audioSegments,
         points: videoPoints
-      };
-      const peakInstance = Peaks.init(options);
+      });
       peakInstance.on("peaks.ready", () => {
         this.setState({ waveformReady: true });
       });
@@ -159,9 +154,9 @@ class App extends React.Component<IMedia, IAppState> {
     }
   }
   public playPause = () => {
-    console.log("play")
-    this.setState({playing: !this.state.playing})
-  }
+    console.log("play");
+    this.setState({ playing: !this.state.playing });
+  };
 
   public seek = (e: number) => {
     const { current } = this.playerRef;
@@ -184,9 +179,10 @@ class App extends React.Component<IMedia, IAppState> {
       sourceUrl,
       waveformReady,
       peaksError,
-      models
+      models,
+      classifications
     } = this.state;
-    const { title, predictions, subtitles } = this.props;
+    const { title, predictions, subtitles, labels } = this.props;
 
     const reactPlayer = this.playerRef.current;
     const duration = (reactPlayer && reactPlayer.getDuration()) || -1;
@@ -205,14 +201,14 @@ class App extends React.Component<IMedia, IAppState> {
       predictionsByTime[Math.round(currentPlaybackTime)] || [];
     const currentVideoPredictions = (currentPredictions.filter(
       ({ x, y, width, height, time }: any) => x && y && width && height && time
-    ) as IVideoPrediction[]).filter(p => this.state.filters[p.classifier]);
+    ) as IVideoPrediction[]).filter(p => classifications[p.classifier]);
     const currentAudioPredictions = (predictions.filter(
       ({ time, duration: pDuration }: any) =>
         pDuration &&
         time &&
         currentPlaybackTime >= time / 1000 &&
         currentPlaybackTime <= (time + duration) / 1000
-    ) as IAudioPrediction[]).filter(p => this.state.filters[p.classifier]);
+    ) as IAudioPrediction[]).filter(p => classifications[p.classifier]);
     const hasModelMetadata = models.length > 0;
 
     return (
@@ -247,13 +243,15 @@ class App extends React.Component<IMedia, IAppState> {
         >
           <section
             className="video-player"
-            style={{ border: "1px dotted grey", flex: "1" }}
+            style={{ border: "1px dotted grey", flex: "1", maxHeight: "100%" }}
           >
             {/* If sourceUrl provided, present visualizations. Otherwise, show <input /> */}
             {sourceUrl ? (
               <div
                 className="visualizations"
                 style={{
+                  display: "flex",
+                  flexDirection: "column",
                   height: "100%",
                   maxHeight: "100%",
                   overflowY: "scroll"
@@ -269,10 +267,15 @@ class App extends React.Component<IMedia, IAppState> {
                 >
                   <source src={sourceUrl} type="audio/mpeg" />
                 </audio>
-                <div className="player-video" style={{ position: "relative" }} onClick={this.playPause}>
+                <div
+                  className="player-video"
+                  style={{ position: "relative" }}
+                  onClick={this.playPause}
+                >
                   <ReactPlayer
                     width="100%"
                     height="100%"
+                    muted={true}
                     ref={this.playerRef}
                     url={sourceUrl}
                     playing={this.state.playing}
@@ -291,9 +294,6 @@ class App extends React.Component<IMedia, IAppState> {
                           : []
                       }
                     }}
-                    width="100%"
-                    height="100%"
-                    controls={true}
                     volume={volume}
                     onProgress={({ playedSeconds }) => {
                       this.setState({ currentPlaybackTime: playedSeconds });
@@ -330,6 +330,10 @@ class App extends React.Component<IMedia, IAppState> {
                     <Layer>
                       {currentVideoPredictions.map(p => {
                         const hasValidBoundingBox = p.width > 0 && p.height > 0;
+                        const fill = stringToRGBA(p.classifier, {
+                          // alpha: p.confidence
+                          alpha: 0.5
+                        });
                         return [
                           hasValidBoundingBox && (
                             <Rect
@@ -339,16 +343,12 @@ class App extends React.Component<IMedia, IAppState> {
                               width={p.width}
                               height={p.height}
                               name={p.classifier}
-                              fill={stringToRGBA(p.classifier, {
-                                alpha: p.confidence / 100
-                              })}
+                              fill={fill}
                               stroke="black"
                             />
                           ),
                           <Path
-                            fill={stringToRGBA(p.classifier, {
-                              alpha: p.confidence / 100
-                            })}
+                            fill={fill}
                             key={JSON.stringify(p) + "-icon"}
                             width={videoHeight / 10}
                             height={videoHeight / 10}
@@ -363,7 +363,8 @@ class App extends React.Component<IMedia, IAppState> {
                         return (
                           <Path
                             fill={stringToRGBA(p.classifier, {
-                              alpha: p.confidence / 100
+                              // alpha: p.confidence
+                              alpha: 0.5
                             })}
                             key={JSON.stringify(p)}
                             width={videoHeight / 10}
@@ -416,52 +417,48 @@ class App extends React.Component<IMedia, IAppState> {
           </section>
           <section
             style={{
-              maxHeight: "100%",
               overflowY: "scroll",
               border: "1px dotted grey",
               flex: "1"
             }}
           >
             <h2>Filter</h2>
-            <tbody>
-              {this.state.categories.map((category, i) => {
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "row",
+                flexWrap: "wrap",
+                justifyContent: "space-around"
+              }}
+            >
+              {Object.keys(classifications).map(c => {
                 return (
-                  <tr>
-                    <th
-                      className={category}
+                  <div key={JSON.stringify(c)}>
+                    <input
+                      type="checkbox"
+                      checked={classifications[c]}
+                      onChange={e => {
+                        this.setState({
+                          classifications: {
+                            ...classifications,
+                            [c]: e.currentTarget.checked
+                          }
+                        });
+                      }}
+                    />
+                    <span
                       style={{
-                        color: stringToRGBA(category, {
+                        color: stringToRGBA(c, {
                           alpha: 1
                         })
                       }}
                     >
-                      {category}
-                    </th>
-                    <th>
-                      <input
-                        key={i}
-                        type="checkbox"
-                        value={category}
-                        checked={this.state.filters[category]}
-                        onChange={ev => {
-                          this.setState({
-                            filters: {
-                              ...this.state.filters,
-                              [category]: ev.currentTarget.checked
-                            }
-                          });
-                        }}
-                      />
-                    </th>
-                  </tr>
+                      {c}
+                    </span>
+                  </div>
                 );
               })}
-            </tbody>
-            <tbody>
-              {predictions.map(prediction => {
-                return <div />;
-              })}
-            </tbody>
+            </div>
             <table style={{ border: "1px dotted grey", width: "100%" }}>
               <thead>
                 <tr>
@@ -474,9 +471,9 @@ class App extends React.Component<IMedia, IAppState> {
                 </tr>
               </thead>
               <tbody>
-                {predictions
+                {[...predictions, ...(labels || [])]
                   .sort((a, b) => a.time - b.time)
-                  .filter(p => this.state.filters[p.classifier])
+                  .filter(p => classifications[p.classifier])
                   .map(prediction => {
                     const isAudio = "duration" in prediction;
                     const isPlaying =
@@ -509,6 +506,14 @@ class App extends React.Component<IMedia, IAppState> {
                         this.currentlyPlayingRefs.push(r);
                       }
                     };
+                    const confidence =
+                      "confidence" in prediction
+                        ? (prediction as IPrediction).confidence
+                        : "1.00";
+                    const model =
+                      "model" in prediction
+                        ? (prediction as IPrediction).model || "---"
+                        : "Ground-Truth";
 
                     return (
                       <tr
@@ -533,11 +538,11 @@ class App extends React.Component<IMedia, IAppState> {
 
                         {hasModelMetadata && (
                           <td>
-                            <code>{prediction.model || "---"}</code>
+                            <code>{model}</code>
                           </td>
                         )}
                         <td>
-                          <code>{prediction.confidence}</code>
+                          <code>{confidence}</code>
                         </td>
                         <td>
                           <code>
