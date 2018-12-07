@@ -43,7 +43,7 @@ interface IAppState {
   playing: boolean;
   playbackRate: number;
   classifications: { [classification: string]: boolean };
-  predictionsByTime: { [seconds: number]: IPrediction[] | undefined };
+  predictionsByTime: { [seconds: number]: ILabel[] | undefined };
   currentPlaybackTime: number;
   peakInstance?: Peaks.PeaksInstance;
   sourceUrl?: string;
@@ -63,12 +63,18 @@ class App extends React.Component<IMedia, IAppState> {
     models: [...new Set(this.props.predictions.map(p => p.model || ""))].filter(
       e => e
     ),
-    classifications: this.props.predictions.reduce(
+    classifications: [
+      ...this.props.predictions,
+      ...(this.props.labels || [])
+    ].reduce(
       (categories, { classifier }) => ({ ...categories, [classifier]: true }),
       {}
     ),
-    predictionsByTime: this.props.predictions.reduce<{
-      [t: number]: IPrediction[];
+    predictionsByTime: [
+      ...this.props.predictions,
+      ...(this.props.labels || [])
+    ].reduce<{
+      [t: number]: ILabel[];
     }>((predictionsByTime, p) => {
       const timeS = Math.round(p.time / 1000);
       return {
@@ -257,16 +263,6 @@ class App extends React.Component<IMedia, IAppState> {
                   overflowY: "scroll"
                 }}
               >
-                <audio
-                  controls
-                  onPlay={() => this.setState({ playing: true })}
-                  onPause={() => this.setState({ playing: false })}
-                  ref={this.peaksAudioRef}
-                  onSeeking={() => this.setState({ playing: true })}
-                  style={{ width: "100%" }}
-                >
-                  <source src={sourceUrl} type="audio/mpeg" />
-                </audio>
                 <div
                   className="player-video"
                   style={{ position: "relative" }}
@@ -380,6 +376,19 @@ class App extends React.Component<IMedia, IAppState> {
                   </Stage>
                 </div>
                 <div ref={this.peaksContainerRef} />
+                <audio
+                  controls
+                  onPlay={() => this.setState({ playing: true })}
+                  onPause={() => this.setState({ playing: false })}
+                  ref={this.peaksAudioRef}
+                  onSeeking={() => this.setState({ playing: true })}
+                  style={{
+                    width: "100%",
+                    display: waveformReady ? "none" : "unset"
+                  }}
+                >
+                  <source src={sourceUrl} type="audio/mpeg" />
+                </audio>
                 {!waveformReady && (
                   <code>
                     Generating audio waveform. May take a long time depending on
@@ -473,6 +482,10 @@ class App extends React.Component<IMedia, IAppState> {
               <tbody>
                 {[...predictions, ...(labels || [])]
                   .sort((a, b) => a.time - b.time)
+                  .map(p => {
+                    console.log(p.classifier);
+                    return p;
+                  })
                   .filter(p => classifications[p.classifier])
                   .map(prediction => {
                     const isAudio = "duration" in prediction;
